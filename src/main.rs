@@ -23,14 +23,54 @@ mod updater;
 const CURRENT_VERSION: u64 = 202011120913;
 const REPOSITORY_URL: &str = "https://github.com/bebasid/bebasin";
 const LATEST_VERSION_URL: &str =
-    "https://raw.githubusercontent.com/bebasid/bebasin/master/latest.json";
-const UPDATE_URL: &str = "https://api.github.com/repos/bebasid/bebasin/releases/latest";
+    "https://raw.githubusercontent.com/bebasid/bebasin/tree/master/hosts";
+const UPDATE_URL: &str = "https://api.github.com/repos/bebasid/bebasid/releases/latest";
 const HOSTS_HEADER: &str = include_str!("../misc/header-hosts");
 const HOSTS_BEBASIN: &str = include_str!("../misc/hosts");
 const DEFAULT_HOSTS: &str = include_str!("../misc/default-hosts");
 
-fn main() {
-    updater::remove_temp_file();
+use std::io;
+use tui::{backend::CrosstermBackend, Terminal};
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use std::{error::Error, io};
+use tui::{
+    backend::{Backend, CrosstermBackend},
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Span, Spans, Text},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame, Terminal,
+};
+use unicode_width::UnicodeWidthStr;
 
-    app::App::new().dispatch();
+fn main() -> Result<(), Box<dyn Error>> {
+    // setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // create app and run it
+    let app = App::default();
+    let res = run_app(&mut terminal, app);
+
+    // restore terminal
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    if let Err(err) = res {
+        println!("{:?}", err)
+    }
+
+    Ok(())
 }
