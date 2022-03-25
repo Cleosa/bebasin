@@ -191,16 +191,29 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn confirmation<B: Backend>(f: &mut Frame<B>, msg: &String) {
-    let block = Block::default().title(msg.to_string()).borders(Borders::ALL);
+    let block = Block::default().title("Confirmation").borders(Borders::ALL)
+        .style(Style::default().bg(Rgb(0,0,0)));
+    let paragraph = Paragraph::new(msg.to_string())
+        .block(block.clone())
+        .alignment(Alignment::Center);
     let area = centered_rect(60, 20, f.size());
     f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
     f.render_widget(block, area);
 }
 
 fn error<B: Backend>(f: &mut Frame<B>, error: &ErrorKind) {
-    let block = Block::default().title(format!("Error: {}", error)).borders(Borders::ALL);
+    let block = Block::default().title(format!("An error occured!")).borders(Borders::ALL)
+        .style(Style::default().bg(Rgb(0,0,0)));
+    let text = vec![
+        Spans::from(format!("Error: {}", error))
+    ];
+    let paragraph = Paragraph::new(text)
+        .block(block.clone())
+        .alignment(Alignment::Center);
     let area = centered_rect(60, 20, f.size());
     f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
     f.render_widget(block, area);
 }
 
