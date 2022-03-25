@@ -13,17 +13,18 @@ use tui::{
     Terminal,
     text::{Span, Spans, Text}, widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use tui::layout::Alignment;
+use tui::layout::{Alignment, Rect};
 use tui::style::Color::Rgb;
-use tui::widgets::{Cell, Row, Table, Wrap};
+use tui::widgets::{Cell, Clear, Row, Table, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{CURRENT_VERSION, HOSTS_BEBASIN, HOSTS_HEADER, REPOSITORY_URL, updater};
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, Status};
 use crate::error::ErrorKind;
 use crate::helpers::AppendableMap;
 use crate::os::HOSTS_BACKUP_PATH;
 use crate::parser::{parse_from_file, parse_from_str, write_to_file};
+use crate::updater::{backup, is_backed};
 
 pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
     loop {
@@ -37,23 +38,62 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     }
                     KeyCode::Down => app.next(),
                     KeyCode::Up => app.previous(),
-                    KeyCode::Enter => {
-                        match app.state.selected() {
-                            Some(selection) => {
-                                match selection {
-                                    0 => {
-
-                                    }
-                                    1 => {
-                                        app.input_mode = InputMode::Editing
-                                    }
-                                    2 => {
-
-                                    }
-                                    _ => {}
-                                }
+                    KeyCode::Esc => {
+                        if let Some(v) = &app.status {
+                            if let Status::Success = v {
+                                app.status = None
                             }
-                            None => {}
+                        }
+                    }
+                    KeyCode::Enter => {
+
+                        if let Some(v) = &app.status {
+                            app.status = None
+                        }
+
+                        if !app.installed {
+                            match app.state.selected() {
+                                Some(selection) => {
+                                    match selection {
+                                        0 => {
+                                            match parse_from_str(HOSTS_BEBASIN) {
+                                                Ok(mut hosts_bebasin) => {
+                                                    match parse_from_file(HOSTS_BACKUP_PATH) {
+                                                        Ok(hosts_backup) => {
+                                                            hosts_bebasin.append(hosts_backup);
+                                                            app.status = Some(Status::Success);
+                                                        }
+                                                        Err(err) => {
+                                                            app.status = Some(Status::Error(err));
+                                                        }
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    app.status = Some(Status::Error(err));
+                                                }
+                                            }
+                                        }
+                                        1 => {
+                                            app.input_mode = InputMode::Editing
+                                        }
+                                        2 => {
+                                            webbrowser::open("https://github.com/mochidaz/bebasin");
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        else {
+
+                        }
+
+                        if !is_backed() {
+                            let backup_result = backup();
+                            if backup_result.is_err() {
+                                return Ok(());
+                            }
                         }
                     }
                     _ => {}
@@ -76,6 +116,46 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
     }
 }
 
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+                .as_ref(),
+        )
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ]
+                .as_ref(),
+        )
+        .split(popup_layout[1])[1]
+}
+
+fn confirmation<B: Backend>(f: &mut Frame<B>) {
+    let block = Block::default().title("Are you sure that you want to install bebasin?").borders(Borders::ALL);
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area); //this clears out the background
+    f.render_widget(block, area);
+}
+
+fn error<B: Backend>(f: &mut Frame<B>, error: &ErrorKind) {
+    let block = Block::default().title(format!("Error: {}", error)).borders(Borders::ALL);
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area); //this clears out the background
+    f.render_widget(block, area);
+}
+
 pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -94,16 +174,6 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         Block::default().borders(Borders::ALL)
             .title_alignment(Alignment::Center)
             .title("Bebasin");
-
-    let create_block = |title: String| {
-        Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default().bg(Color::White).fg(Color::Black))
-            .title(Span::styled(
-                title,
-                Style::default().add_modifier(Modifier::BOLD),
-            ))
-    };
 
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
     let normal_style = Style::default().bg(Rgb(144, 238, 144));
@@ -135,6 +205,26 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             Constraint::Min(10),
         ]);
     f.render_stateful_widget(t, chunks[0], &mut app.state);
+
+    match &app.status {
+        Some(v) => {
+            match v {
+                Status::Error(e) => {
+                    let block = Block::default().title(format!("Error: {}", e)).borders(Borders::ALL);
+                    let area = centered_rect(60, 20, f.size());
+                    f.render_widget(Clear, area); //this clears out the background
+                    f.render_widget(block, area);
+                }
+                Status::Success => {
+                    let block = Block::default().title("Are you sure that you want to install bebasin?").borders(Borders::ALL);
+                    let area = centered_rect(60, 20, f.size());
+                    f.render_widget(Clear, area); //this clears out the background
+                    f.render_widget(block, area);
+                }
+            }
+        }
+        None => {}
+    }
 
     let input = Paragraph::new(app.input.as_ref())
         .style(match app.input_mode {

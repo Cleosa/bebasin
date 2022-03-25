@@ -1,4 +1,5 @@
 use tui::widgets::TableState;
+use crate::error::ErrorKind;
 
 use crate::updater::is_installed;
 
@@ -7,12 +8,18 @@ pub enum InputMode {
     Editing,
 }
 
+pub enum Status {
+    Error(ErrorKind),
+    Success,
+}
+
 pub struct App<'a> {
     pub state: TableState,
     pub input: String,
     pub input_mode: InputMode,
     pub items: Vec<Vec<&'a str>>,
     pub installed: bool,
+    pub status: Option<Status>,
 }
 
 impl<'a> App<'a> {
@@ -37,6 +44,7 @@ impl<'a> App<'a> {
             input_mode: InputMode::Normal,
             items,
             installed: is_installed(),
+            status: None,
         }
     }
     pub fn next(&mut self) {
