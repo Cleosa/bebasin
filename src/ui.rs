@@ -1,4 +1,4 @@
-use std::{error::Error, io};
+use std::{error::Error, fs, io};
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -22,11 +22,32 @@ use crate::{CURRENT_VERSION, HOSTS_BEBASIN, HOSTS_HEADER, REPOSITORY_URL, update
 use crate::app::{App, InputMode, Status};
 use crate::error::ErrorKind;
 use crate::helpers::AppendableMap;
-use crate::os::HOSTS_BACKUP_PATH;
+use crate::os::{HOSTS_BACKUP_PATH, HOSTS_PATH};
 use crate::parser::{parse_from_file, parse_from_str, write_to_file};
 use crate::updater::{backup, is_backed};
 
+use std::collections::{HashMap, HashSet};
+
+struct HostsData<'a> {
+    hosts_path: Option<&'a str>,
+    hosts_bebasin: Option<HashMap<String, HashSet<String>>>,
+    hosts_header: Option<&'a str>,
+}
+
+impl<'a> HostsData<'a> {
+    fn new() -> Self {
+        Self {
+            hosts_path: None,
+            hosts_bebasin: None,
+            hosts_header: None,
+        }
+    }
+}
+
 pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+
+    let mut hosts_data = HostsData::new();
+
     loop {
         terminal.draw(|f| ui(f, &mut app))?;
 
@@ -40,61 +61,87 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     KeyCode::Up => app.previous(),
                     KeyCode::Esc => {
                         if let Some(v) = &app.status {
-                            if let Status::Success = v {
-                                app.status = None
+                            if let Status::Success(_) = v {
+                                app.status = None;
+                                fs::remove_file(HOSTS_BACKUP_PATH);
                             }
                         }
                     }
                     KeyCode::Enter => {
 
                         if let Some(v) = &app.status {
-                            app.status = None
-                        }
-
-                        if !app.installed {
-                            match app.state.selected() {
-                                Some(selection) => {
-                                    match selection {
-                                        0 => {
-                                            match parse_from_str(HOSTS_BEBASIN) {
-                                                Ok(mut hosts_bebasin) => {
-                                                    match parse_from_file(HOSTS_BACKUP_PATH) {
-                                                        Ok(hosts_backup) => {
-                                                            hosts_bebasin.append(hosts_backup);
-                                                            app.status = Some(Status::Success);
-                                                        }
-                                                        Err(err) => {
-                                                            app.status = Some(Status::Error(err));
-                                                        }
-                                                    }
-                                                }
-                                                Err(err) => {
-                                                    app.status = Some(Status::Error(err));
-                                                }
-                                            }
-                                        }
-                                        1 => {
-                                            app.input_mode = InputMode::Editing
-                                        }
-                                        2 => {
-                                            webbrowser::open("https://github.com/mochidaz/bebasin");
-                                        }
-                                        _ => {}
+                            if let Status::Success(_) = v {
+                                let hosts_bebasin = if let Some(v) = &hosts_data.hosts_bebasin {
+                                    v
+                                }
+                                else {
+                                    panic!()
+                                };
+                                match write_to_file(&hosts_data.hosts_path.unwrap(), hosts_bebasin, &hosts_data.hosts_header.unwrap()) {
+                                    Err(err) => {
+                                        app.status = Some(Status::Error(err));
+                                    }
+                                    Ok(_) => {
                                     }
                                 }
-                                None => {}
+                                app.status = None;
+                                app.items = vec![
+                                    vec!["Uninstall"],
+                                    vec!["Update"],
+                                    vec!["Repository"],
+                                ]
                             }
                         }
                         else {
+                            if !is_backed() {
+                                let backup_result = backup();
+                                if backup_result.is_err() {
+                                    return Ok(());
+                                }
+                            }
 
-                        }
+                            if !app.installed {
+                                match app.state.selected() {
+                                    Some(selection) => {
+                                        match selection {
+                                            0 => {
+                                                match parse_from_str(HOSTS_BEBASIN) {
+                                                    Ok(mut hosts_bebasin) => {
+                                                        match parse_from_file(HOSTS_BACKUP_PATH) {
+                                                            Ok(hosts_backup) => {
+                                                                hosts_bebasin.append(hosts_backup);
+                                                                app.status = Some(Status::Success(String::from("Are you sure that you want to install bebasin?")));
+                                                                hosts_data.hosts_path = Some(HOSTS_PATH);
+                                                                hosts_data.hosts_bebasin = Some(hosts_bebasin);
+                                                                hosts_data.hosts_header = Some(HOSTS_HEADER);
+                                                            }
+                                                            Err(err) => {
+                                                                app.status = Some(Status::Error(err));
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(err) => {
+                                                        app.status = Some(Status::Error(err));
+                                                    }
+                                                }
+                                            }
+                                            1 => {
+                                                app.input_mode = InputMode::Editing
+                                            }
+                                            2 => {
+                                                webbrowser::open("https://github.com/mochidaz/bebasin");
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                            else {
 
-                        if !is_backed() {
-                            let backup_result = backup();
-                            if backup_result.is_err() {
-                                return Ok(());
                             }
                         }
+
                     }
                     _ => {}
                 },
@@ -142,17 +189,17 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn confirmation<B: Backend>(f: &mut Frame<B>) {
-    let block = Block::default().title("Are you sure that you want to install bebasin?").borders(Borders::ALL);
+fn confirmation<B: Backend>(f: &mut Frame<B>, msg: &String) {
+    let block = Block::default().title(msg.to_string()).borders(Borders::ALL);
     let area = centered_rect(60, 20, f.size());
-    f.render_widget(Clear, area); //this clears out the background
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
 }
 
 fn error<B: Backend>(f: &mut Frame<B>, error: &ErrorKind) {
     let block = Block::default().title(format!("Error: {}", error)).borders(Borders::ALL);
     let area = centered_rect(60, 20, f.size());
-    f.render_widget(Clear, area); //this clears out the background
+    f.render_widget(Clear, area);
     f.render_widget(block, area);
 }
 
@@ -210,16 +257,10 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         Some(v) => {
             match v {
                 Status::Error(e) => {
-                    let block = Block::default().title(format!("Error: {}", e)).borders(Borders::ALL);
-                    let area = centered_rect(60, 20, f.size());
-                    f.render_widget(Clear, area); //this clears out the background
-                    f.render_widget(block, area);
+                    error(f, e)
                 }
-                Status::Success => {
-                    let block = Block::default().title("Are you sure that you want to install bebasin?").borders(Borders::ALL);
-                    let area = centered_rect(60, 20, f.size());
-                    f.render_widget(Clear, area); //this clears out the background
-                    f.render_widget(block, area);
+                Status::Success(m) => {
+                    confirmation(f, m)
                 }
             }
         }
