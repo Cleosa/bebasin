@@ -221,6 +221,7 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
     let wrapper =
         Block::default().borders(Borders::ALL)
+            .style(Style::default())
             .title_alignment(Alignment::Center)
             .title("Bebasin");
 
