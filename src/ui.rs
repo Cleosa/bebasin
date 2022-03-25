@@ -82,6 +82,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                                         app.status = Some(Status::Error(err));
                                     }
                                     Ok(_) => {
+                                        app.installed = true;
                                     }
                                 }
                                 app.status = None;
@@ -211,6 +212,7 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             [
                 Constraint::Min(1),
                 Constraint::Length(4),
+                Constraint::Length(4),
             ]
                 .as_ref(),
         )
@@ -253,6 +255,30 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
         ]);
     f.render_stateful_widget(t, chunks[0], &mut app.state);
 
+    let status = if app.installed {
+        "Installed"
+    } else {
+        "Not Installed"
+    };
+
+    let text = vec![
+        Spans::from(format!("Status: {}", status))
+    ];
+
+    let create_block = |title| {
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
+    };
+
+    let paragraph = Paragraph::new(text.clone())
+        .block(create_block("Status"))
+        .alignment(Alignment::Left);
+    f.render_widget(paragraph, chunks[1]);
+
     match &app.status {
         Some(v) => {
             match v {
@@ -273,7 +299,7 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             InputMode::Editing => Style::default().fg(Color::Yellow),
         })
         .block(Block::default().borders(Borders::ALL).title("Custom Host Path"));
-    f.render_widget(input, chunks[1]);
+    f.render_widget(input, chunks[2]);
     match app.input_mode {
         InputMode::Normal =>
             {}
