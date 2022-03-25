@@ -60,11 +60,19 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     KeyCode::Down => app.next(),
                     KeyCode::Up => app.previous(),
                     KeyCode::Esc => {
-                        if let Some(v) = &app.status {
-                            if let Status::Success(_) = v {
-                                app.status = None;
-                                fs::remove_file(HOSTS_BACKUP_PATH);
+                        match &app.status {
+                            Some(s) => {
+                                match s {
+                                    Status::Success(_) => {
+                                        app.status = None;
+                                        fs::remove_file(HOSTS_BACKUP_PATH);
+                                    }
+                                    Status::Error(_) => {
+                                        app.status = None;
+                                    }
+                                }
                             }
+                            None => {}
                         }
                     }
                     KeyCode::Enter => {
@@ -75,7 +83,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                                     v
                                 }
                                 else {
-                                    panic!()
+                                    unimplemented!()
                                 };
                                 match write_to_file(&hosts_data.hosts_path.unwrap(), hosts_bebasin, &hosts_data.hosts_header.unwrap()) {
                                     Err(err) => {
@@ -96,8 +104,8 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                         else {
                             if !is_backed() {
                                 let backup_result = backup();
-                                if backup_result.is_err() {
-                                    return Ok(());
+                                if let Err(err) = backup_result {
+                                    app.status = Some(Status::Error(err))
                                 }
                             }
 
