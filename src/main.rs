@@ -1,15 +1,35 @@
 extern crate crossterm;
-extern crate cursive;
+extern crate itertools;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 extern crate nix;
 extern crate pest;
+#[macro_use]
+extern crate pest_derive;
 extern crate webbrowser;
 #[cfg(target_os = "windows")]
 extern crate winapi;
-#[macro_use]
-extern crate pest_derive;
-extern crate itertools;
 extern crate zip;
+
+use std::{error::Error, io};
+
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use tui::{
+    backend::{Backend, CrosstermBackend},
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    Terminal,
+    text::{Span, Spans, Text}, widgets::{Block, Borders, List, ListItem, Paragraph},
+};
+use unicode_width::UnicodeWidthStr;
+
+use app::App;
+
+use crate::ui::run_app;
 
 mod app;
 mod error;
@@ -29,24 +49,6 @@ const HOSTS_HEADER: &str = include_str!("../misc/header-hosts");
 const HOSTS_BEBASIN: &str = include_str!("../misc/hosts");
 const DEFAULT_HOSTS: &str = include_str!("../misc/default-hosts");
 
-use std::io;
-use tui::{backend::CrosstermBackend, Terminal};
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use std::{error::Error, io};
-use tui::{
-    backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    text::{Span, Spans, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame, Terminal,
-};
-use unicode_width::UnicodeWidthStr;
-
 fn main() -> Result<(), Box<dyn Error>> {
     // setup terminal
     enable_raw_mode()?;
@@ -56,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // create app and run it
-    let app = App::default();
+    let app = App::new();
     let res = run_app(&mut terminal, app);
 
     // restore terminal

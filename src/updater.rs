@@ -1,13 +1,15 @@
-use crate::error::ErrorKind;
-use crate::os::{HOSTS_BACKUP_PATH, HOSTS_PATH};
-use crate::parser::{parse_from_file, write_to_file};
-use crate::{CURRENT_VERSION, LATEST_VERSION_URL, UPDATE_URL, HOSTS_HEADER, DEFAULT_HOSTS};
-use serde::Deserialize;
 use std::env::{current_dir, current_exe};
 use std::fs;
 use std::io::{self, Read};
 use std::io::Write as _;
 use std::path::Path;
+
+use serde::Deserialize;
+
+use crate::{CURRENT_VERSION, DEFAULT_HOSTS, HOSTS_HEADER, LATEST_VERSION_URL, UPDATE_URL};
+use crate::error::ErrorKind;
+use crate::os::{HOSTS_BACKUP_PATH, HOSTS_PATH};
+use crate::parser::{parse_from_file, write_to_file};
 
 pub fn is_installed() -> bool {
     // Maybe there are another condition that can be checked

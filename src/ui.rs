@@ -1,86 +1,65 @@
+use std::{error::Error, io};
+
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::{error::Error, io};
 use tui::{
     backend::{Backend, CrosstermBackend},
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Span, Spans, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Clear},
-    Frame, Terminal,
+    Terminal,
+    text::{Span, Spans, Text}, widgets::{Block, Borders, List, ListItem, Paragraph},
 };
+use tui::layout::Alignment;
+use tui::style::Color::Rgb;
+use tui::widgets::{Cell, Row, Table, Wrap};
 use unicode_width::UnicodeWidthStr;
 
+use crate::{CURRENT_VERSION, HOSTS_BEBASIN, HOSTS_HEADER, REPOSITORY_URL, updater};
+use crate::app::{App, InputMode};
+use crate::error::ErrorKind;
+use crate::helpers::AppendableMap;
+use crate::os::HOSTS_BACKUP_PATH;
 use crate::parser::{parse_from_file, parse_from_str, write_to_file};
-use crate::{updater, CURRENT_VERSION, HOSTS_BEBASIN, HOSTS_HEADER, REPOSITORY_URL};
 
-pub enum InputMode {
-    Normal,
-    Editing,
-}
-
-/// App holds the state of the application
-pub struct App {
-    /// Current value of the input box
-    pub input: String,
-    /// Current input mode
-    pub input_mode: InputMode,
-    /// History of recorded messages
-    pub messages: Vec<String>,
-
-    pub show_popup: bool,
-}
-
-impl Default for App {
-    fn default() -> App {
-        App {
-            input: String::new(),
-            input_mode: InputMode::Normal,
-            messages: Vec::new(),
-            show_popup: false,
-        }
-    }
-}
-
-
-
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
     loop {
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         if let Event::Key(key) = event::read()? {
             match app.input_mode {
                 InputMode::Normal => match key.code {
-                    KeyCode::Char('e') => {
-                        app.input_mode = InputMode::Editing;
-                    }
-                    KeyCode::Char('i') => {
-                        match parse_from_str(HOSTS_BEBASIN) {
-                            Ok(mut hosts_bebasin) => {
-                                match parse_from_str(HOSTS_BACKUP_PATH) {
-                                    Ok(hosts_backup) => {
-                                        hosts_bebasin.append(hosts_backup);
-
-                                    }
-                                    Err(_) => {
-
-                                    }
-                                }
-                            }
-                        }
-                    }
                     KeyCode::Char('q') => {
                         return Ok(());
+                    }
+                    KeyCode::Down => app.next(),
+                    KeyCode::Up => app.previous(),
+                    KeyCode::Enter => {
+                        match app.state.selected() {
+                            Some(selection) => {
+                                match selection {
+                                    0 => {
+
+                                    }
+                                    1 => {
+                                        app.input_mode = InputMode::Editing
+                                    }
+                                    2 => {
+
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            None => {}
+                        }
                     }
                     _ => {}
                 },
                 InputMode::Editing => match key.code {
-                    KeyCode::Enter => {
-                        app.messages.push(app.input.drain(..).collect());
-                    }
+                    KeyCode::Enter => {}
                     KeyCode::Char(c) => {
                         app.input.push(c);
                     }
@@ -97,87 +76,82 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
+        .margin(3)
         .constraints(
             [
-                Constraint::Length(1),
-                Constraint::Length(3),
                 Constraint::Min(1),
+                Constraint::Length(4),
             ]
                 .as_ref(),
         )
         .split(f.size());
 
-    let (msg, style) = match app.input_mode {
-        InputMode::Normal => (
-            vec![
-                Span::raw("Press "),
-                Span::styled("q", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" to exit, "),
-                Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" to start editing."),
-            ],
-            Style::default().add_modifier(Modifier::RAPID_BLINK),
-        ),
-        InputMode::Editing => (
-            vec![
-                Span::raw("Press "),
-                Span::styled("Esc", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" to stop editing, "),
-                Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" to record the message"),
-            ],
-            Style::default(),
-        ),
+
+    let wrapper =
+        Block::default().borders(Borders::ALL)
+            .title_alignment(Alignment::Center)
+            .title("Bebasin");
+
+    let create_block = |title: String| {
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::White).fg(Color::Black))
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
     };
-    let mut text = Text::from(Spans::from(msg));
-    text.patch_style(style);
-    let help_message = Paragraph::new(text);
-    f.render_widget(help_message, chunks[0]);
+
+    let selected_style = Style::default().add_modifier(Modifier::REVERSED);
+    let normal_style = Style::default().bg(Rgb(144, 238, 144));
+    let header_cells = ["Installation Menu"]
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Rgb(0, 0, 0))));
+    let header = Row::new(header_cells)
+        .style(normal_style)
+        .height(1)
+        .bottom_margin(1);
+    let rows = app.items.iter().map(|item| {
+        let height = item
+            .iter()
+            .map(|content| content.chars().filter(|c| *c == '\n').count())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let cells = item.iter().map(|c| Cell::from(*c));
+        Row::new(cells).height(height as u16).bottom_margin(1)
+    });
+    let t = Table::new(rows)
+        .header(header)
+        .block(wrapper)
+        .highlight_style(selected_style)
+        .highlight_symbol(">> ")
+        .widths(&[
+            Constraint::Percentage(50),
+            Constraint::Length(30),
+            Constraint::Min(10),
+        ]);
+    f.render_stateful_widget(t, chunks[0], &mut app.state);
 
     let input = Paragraph::new(app.input.as_ref())
         .style(match app.input_mode {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Style::default().fg(Color::Yellow),
         })
-        .block(Block::default().borders(Borders::ALL).title("Input"));
+        .block(Block::default().borders(Borders::ALL).title("Custom Host Path"));
     f.render_widget(input, chunks[1]);
     match app.input_mode {
         InputMode::Normal =>
-        // Hide the cursor. `Frame` does this by default, so we don't need to do anything here
             {}
 
         InputMode::Editing => {
-            // Make the cursor visible and ask tui-rs to put it at the specified coordinates after rendering
             f.set_cursor(
-                // Put cursor past the end of the input text
                 chunks[1].x + app.input.width() as u16 + 1,
-                // Move one line down, from the border to the input line
                 chunks[1].y + 1,
             )
         }
-    }
-
-    let messages: Vec<ListItem> = app
-        .messages
-        .iter()
-        .enumerate()
-        .map(|(i, m)| {
-            let content = vec![Spans::from(Span::raw(format!("{}: {}", i, m)))];
-            ListItem::new(content)
-        })
-        .collect();
-    let messages =
-        List::new(messages).block(Block::default().borders(Borders::ALL).title("Messages"));
-    f.render_widget(messages, chunks[2]);
-
-    if app.show_popup {
-        let block = Block::default().title("Warning!").borders(Borders::ALL);
-        let area = centered_rect(60, 20, size);
-        f.render_widget(Clear, area);
-        f.render_widget(block, area);
     }
 }
