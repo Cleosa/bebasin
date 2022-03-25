@@ -1,338 +1,385 @@
+use std::{error::Error, fs, io};
+
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use tui::{
+    backend::{Backend, CrosstermBackend},
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    Terminal,
+    text::{Span, Spans, Text}, widgets::{Block, Borders, List, ListItem, Paragraph},
+};
+use tui::layout::{Alignment, Rect};
+use tui::style::Color::Rgb;
+use tui::widgets::{Cell, Clear, Row, Table, Wrap};
+use unicode_width::UnicodeWidthStr;
+
+use crate::{CURRENT_VERSION, HOSTS_BEBASIN, HOSTS_HEADER, REPOSITORY_URL, updater};
+use crate::app::{App, InputMode, Status};
 use crate::error::ErrorKind;
+use crate::helpers::AppendableMap;
 use crate::os::{HOSTS_BACKUP_PATH, HOSTS_PATH};
 use crate::parser::{parse_from_file, parse_from_str, write_to_file};
-use crate::{updater, CURRENT_VERSION, HOSTS_BEBASIN, HOSTS_HEADER, REPOSITORY_URL};
+use crate::updater::{backup, is_backed};
 
-use cursive::traits::*;
-use cursive::views::{Button, Dialog, DummyView, LinearLayout, TextView, EditView};
-use cursive::Cursive;
+use std::collections::{HashMap, HashSet};
 
-use crate::helpers::AppendableMap;
-use crate::updater::{backup, is_backed, is_installed};
-use std::fs;
-
-fn clear_layer(cursive: &mut Cursive) {
-    while cursive.pop_layer().is_some() {}
+struct HostsData<'a> {
+    hosts_path: Option<&'a str>,
+    hosts_bebasin: Option<HashMap<String, HashSet<String>>>,
+    hosts_header: Option<&'a str>,
 }
 
-fn error(cursive: &mut Cursive, err: ErrorKind) {
-    cursive.pop_layer();
-
-    cursive.add_layer(
-        Dialog::text(err.to_string())
-            .button("Ok", |cursive| {
-                cursive.pop_layer();
-            })
-            .title("Error"),
-    );
-}
-
-fn install(cursive: &mut Cursive) {
-    let box_layout = Dialog::text("Parsing the file...").title("Loading...");
-
-    cursive.add_layer(box_layout);
-
-    if !is_backed() {
-        let backup_result = backup();
-        if backup_result.is_err() {
-            error(cursive, backup_result.err().unwrap());
-            return;
+impl<'a> HostsData<'a> {
+    fn new() -> Self {
+        Self {
+            hosts_path: None,
+            hosts_bebasin: None,
+            hosts_header: None,
         }
     }
-
-    match parse_from_str(HOSTS_BEBASIN) {
-        Ok(mut hosts_bebasin) => {
-            match parse_from_file(HOSTS_BACKUP_PATH) {
-                Ok(hosts_backup) => {
-                    hosts_bebasin.append(hosts_backup);
-                    cursive.pop_layer();
-
-                    let box_layout = Dialog::text(
-                        "Are you sure you want to\n\
-                    merge your hosts file with\n\
-                    Bebasin hosts?",
-                    )
-                    .title("Confirmation")
-                    .button("Confirm", move |cursive| {
-                        match write_to_file(HOSTS_PATH, &hosts_bebasin, HOSTS_HEADER) {
-                            Err(err) => {
-                                cursive.add_layer(
-                                    Dialog::text(err.to_string()).title("Error").button(
-                                        "Ok",
-                                        |cursive| {
-                                            cursive.pop_layer();
-                                            cursive.pop_layer();
-                                        },
-                                    ),
-                                );
-                            }
-                            _ => {
-                                cursive.add_layer(
-                                    Dialog::text(
-                                        "The hosts file has been updated,\n\
-                        Please restart your machine",
-                                    )
-                                    .title("Done")
-                                    .button("Ok", |cursive| {
-                                        // Re-create the main menu
-                                        clear_layer(cursive);
-                                        main(cursive);
-                                    }),
-                                );
-                            }
-                        };
-                    })
-                    .button("Cancel", |cursive| {
-                        cursive.pop_layer();
-                    });
-
-                    cursive.add_layer(box_layout);
-                }
-                Err(err) => {
-                    error(cursive, err);
-                }
-            };
-        }
-        Err(err) => {
-            error(cursive, err);
-        }
-    };
 }
 
-fn uninstall_finish(cursive: &mut Cursive) {
-    let layer = Dialog::text(
-        "The hosts file has been updated,\n\
-        Please restart your network/machine",
-    )
-    .title("Done")
-    .button("Ok", |cursive| {
-        cursive.pop_layer();
+pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
 
-        // Re-create the main menu
-        clear_layer(cursive);
-        main(cursive);
-    });
+    let mut hosts_data = HostsData::new();
 
-    cursive.add_layer(layer);
-}
+    loop {
+        terminal.draw(|f| ui(f, &mut app))?;
 
-fn uninstall(cursive: &mut Cursive) {
-    let box_layout = Dialog::text(
-        "Are you sure you want to\n\
-        uninstall Bebasin hosts?",
-    )
-    .title("Confirmation")
-    .button("Confirm", move |cursive| {
-        // 1. Copy the backup to the real hosts
-        // 2. Delete the backup
-        // 3, Remove all temporary file
-        match fs::copy(HOSTS_BACKUP_PATH, HOSTS_PATH) {
-            Ok(_) => {
-                updater::remove_temp_file();
+        if let Event::Key(key) = event::read()? {
+            match app.input_mode {
+                InputMode::Normal => match key.code {
+                    KeyCode::Char('q') => {
+                        return Ok(());
+                    }
+                    KeyCode::Down => app.next(),
+                    KeyCode::Up => app.previous(),
+                    KeyCode::Esc => {
+                        match &app.status {
+                            Some(s) => {
+                                match s {
+                                    Status::InstallSuccess(_) => {
+                                        app.status = None;
+                                        fs::remove_file(HOSTS_BACKUP_PATH);
+                                    }
+                                    _ => {
+                                        app.status = None;
+                                    }
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                    KeyCode::Enter => {
 
-                match fs::remove_file(HOSTS_BACKUP_PATH) {
-                    Err(err) => return error(cursive, ErrorKind::IOError(err)),
+                        if let Some(v) = &app.status {
+                            match v {
+                                Status::InstallSuccess(_) => {
+                                    let hosts_bebasin = if let Some(h) = &hosts_data.hosts_bebasin {
+                                        h
+                                    }
+                                    else {
+                                        unimplemented!()
+                                    };
+                                    match write_to_file(&hosts_data.hosts_path.unwrap(), hosts_bebasin, &hosts_data.hosts_header.unwrap()) {
+                                        Err(err) => {
+                                            app.status = Some(Status::Error(err));
+                                        }
+                                        Ok(_) => {
+                                            app.installed = true;
+                                        }
+                                    }
+                                    app.status = None;
+                                    app.items = vec![
+                                        vec!["Uninstall"],
+                                        vec!["Update"],
+                                        vec!["Repository"],
+                                    ]
+                                }
+                                Status::RemoveSuccess(_) => {
+                                    app.status = None;
+                                    app.installed = false;
+                                    app.items = vec![
+                                        vec!["Install"],
+                                        vec!["Install Custom"],
+                                        vec!["Repository"],
+                                    ];
+                                }
+                                _ => {}
+                            }
+                        }
+                        else {
+                            if !is_backed() {
+                                let backup_result = backup();
+                                if let Err(err) = backup_result {
+                                    app.status = Some(Status::Error(err))
+                                }
+                            }
+
+                            if !app.installed {
+                                match app.state.selected() {
+                                    Some(selection) => {
+                                        match selection {
+                                            0 => {
+                                                match parse_from_str(HOSTS_BEBASIN) {
+                                                    Ok(mut hosts_bebasin) => {
+                                                        match parse_from_file(HOSTS_BACKUP_PATH) {
+                                                            Ok(hosts_backup) => {
+                                                                hosts_bebasin.append(hosts_backup);
+                                                                app.status = Some(Status::InstallSuccess(String::from("Are you sure that you want to install bebasin?")));
+                                                                hosts_data.hosts_path = Some(HOSTS_PATH);
+                                                                hosts_data.hosts_bebasin = Some(hosts_bebasin);
+                                                                hosts_data.hosts_header = Some(HOSTS_HEADER);
+                                                            }
+                                                            Err(err) => {
+                                                                app.status = Some(Status::Error(err));
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(err) => {
+                                                        app.status = Some(Status::Error(err));
+                                                    }
+                                                }
+                                            }
+                                            1 => {
+                                                app.input_mode = InputMode::Editing
+                                            }
+                                            2 => {
+                                                webbrowser::open("https://github.com/mochidaz/bebasin");
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                            else {
+                                match app.state.selected() {
+                                    Some(selection) => {
+                                        match selection {
+                                            0 => {
+                                                match fs::copy(HOSTS_BACKUP_PATH, HOSTS_PATH) {
+                                                    Ok(_) => {
+                                                        updater::remove_temp_file();
+
+                                                        match fs::remove_file(HOSTS_BACKUP_PATH) {
+                                                            Err(err) => {
+                                                                app.status = Some(Status::Error(ErrorKind::IOError(err)))
+                                                            }
+                                                            _ => {
+                                                                app.status = Some(Status::RemoveSuccess(String::from("Success!")));
+                                                            }
+                                                        };
+                                                    }
+                                                    Err(err) => {
+                                                        app.status = Some(Status::Error(ErrorKind::IOError(err)))
+                                                    },
+                                                };
+                                            }
+                                            1 => {
+
+                                            }
+                                            2 => {
+
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    None => {
+
+                                    }
+                                }
+                            }
+                        }
+
+                    }
                     _ => {}
-                };
-
-                uninstall_finish(cursive);
+                },
+                InputMode::Editing => match key.code {
+                    KeyCode::Enter => {}
+                    KeyCode::Char(c) => {
+                        app.input.push(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.input.pop();
+                    }
+                    KeyCode::Esc => {
+                        app.input_mode = InputMode::Normal;
+                    }
+                    _ => {}
+                },
             }
-            Err(err) => error(cursive, ErrorKind::IOError(err)),
-        };
-    })
-    .button("Cancel", |cursive| {
-        cursive.pop_layer();
-    });
-
-    cursive.add_layer(box_layout);
-}
-
-fn open_browser(cursive: &mut Cursive, url: &str) {
-    if webbrowser::open(url).is_err() {
-        let layout = Dialog::text("Can't open any browser")
-            .title("Error")
-            .button("Ok", |cursive| {
-                cursive.pop_layer();
-            });
-
-        cursive.add_layer(layout);
-    }
-}
-
-
-fn install_custom_ui(cursive: &mut Cursive) {
-    let box_layout = Dialog::new()
-    .title("Your custom hosts path")
-    .content(
-        EditView::new()
-            .on_submit(install_custom)
-            .with_name("custom_hosts")
-            .fixed_width(20),
-    )
-    .button("Ok", |x|{
-        let custom_hosts = x
-            .call_on_name("custom_hosts", |view: &mut EditView| {
-                view.get_content()
-            })
-            .unwrap();
-        install_custom(x, custom_hosts.as_str());
-    });
-    cursive.add_layer(box_layout);
-}
-
-fn install_custom(cursive: &mut Cursive, path: &str) {
-    use std::io::Read;
-    let mut f = fs::File::open(path).expect("Unable to open file");
-    let mut contents = String::new();
-    f.read_to_string(&mut contents).expect("Error");
-    let hosts_custom = contents.as_str();
-
-    if !is_backed() {
-        let backup_result = backup();
-        if backup_result.is_err() {
-            error(cursive, backup_result.err().unwrap());
-            return;
         }
     }
-    match parse_from_str(hosts_custom) {
-        Ok(mut hosts_custom) => {
-            match parse_from_file(HOSTS_BACKUP_PATH) {
-                Ok(hosts_backup) => {
-                    hosts_custom.append(hosts_backup);
-                    cursive.pop_layer();
-
-                    let box_layout = Dialog::text(
-                        "Are you sure you want to\n\
-                    merge your hosts file with\n\
-                    your custom hosts?",
-                    )
-                        .title("Confirmation")
-                        .button("Confirm", move |cursive| {
-                            match write_to_file(HOSTS_PATH, &hosts_custom, HOSTS_HEADER) {
-                                Err(err) => {
-                                    cursive.add_layer(
-                                        Dialog::text(err.to_string()).title("Error").button(
-                                            "Ok",
-                                            |cursive| {
-                                                cursive.pop_layer();
-                                                cursive.pop_layer();
-                                            },
-                                        ),
-                                    );
-                                }
-                                _ => {
-                                    cursive.add_layer(
-                                        Dialog::text(
-                                            "The hosts file has been updated,\n\
-                        Please restart your machine",
-                                        )
-                                            .title("Done")
-                                            .button("Ok", |cursive| {
-                                                // Re-create the main menu
-                                                clear_layer(cursive);
-                                                main(cursive);
-                                            }),
-                                    );
-                                }
-                            };
-                        })
-                        .button("Cancel", |cursive| {
-                            cursive.pop_layer();
-                        });
-
-                    cursive.add_layer(box_layout);
-                }
-                Err(err) => {
-                    error(cursive, err);
-                }
-            };
-        }
-        Err(err) => {
-            error(cursive, err);
-        }
-    };
 }
 
-fn update(cursive: &mut Cursive) {
-    let mut updater_instance = updater::Updater::new();
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+                .as_ref(),
+        )
+        .split(r);
 
-    let loading_layer =
-        Dialog::text("Retrieving latest application information").title("Loading...");
-    cursive.add_layer(loading_layer);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ]
+                .as_ref(),
+        )
+        .split(popup_layout[1])[1]
+}
 
-    let latest = match updater_instance.get_latest_info() {
-        Ok(latest) => latest,
-        Err(err) => {
-            return {
-                error(cursive, err);
-            };
-        }
-    };
+fn confirmation<B: Backend>(f: &mut Frame<B>, msg: &String) {
+    let block = Block::default().title("Notification").borders(Borders::ALL)
+        .style(Style::default().bg(Rgb(0,0,0)));
+    let paragraph = Paragraph::new(msg.to_string())
+        .block(block.clone())
+        .alignment(Alignment::Center);
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
+    f.render_widget(block, area);
+}
 
-    cursive.pop_layer();
+fn error<B: Backend>(f: &mut Frame<B>, error: &ErrorKind) {
+    let block = Block::default().title(format!("An error occured!")).borders(Borders::ALL)
+        .style(Style::default().bg(Rgb(0,0,0)));
+    let text = vec![
+        Spans::from(format!("Error: {}", error))
+    ];
+    let paragraph = Paragraph::new(text)
+        .block(block.clone())
+        .alignment(Alignment::Center);
+    let area = centered_rect(60, 20, f.size());
+    f.render_widget(Clear, area);
+    f.render_widget(paragraph, area);
+    f.render_widget(block, area);
+}
 
-    if !updater_instance.is_updatable() {
-        let warning_layer = Dialog::text("You have been using the latest update application")
-            .button("Ok", |cursive| {
-                cursive.pop_layer();
-            })
-            .title("Warning");
-        cursive.add_layer(warning_layer);
-        return;
-    }
+pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(3)
+        .constraints(
+            [
+                Constraint::Min(1),
+                Constraint::Length(4),
+                Constraint::Length(4),
+            ]
+                .as_ref(),
+        )
+        .split(f.size());
 
-    let confirmation_layer = Dialog::text(format!(
-        "Are you sure you want to update to version {}?",
-        latest.version
-    ))
-    .title("Confirmation")
-    .button("No", |cursive| {
-        cursive.pop_layer();
-    })
-    .button("Yes", move |cursive| match updater_instance.update() {
-        Ok(_) => {
-            let updated_layer =
-                Dialog::text("The application has been updated, please re-run the application")
-                    .button("Ok", |cursive| {
-                        cursive.quit();
-                    });
-            cursive.add_layer(updated_layer);
-        }
-        Err(err) => error(cursive, err),
+
+    let wrapper =
+        Block::default().borders(Borders::ALL)
+            .style(Style::default())
+            .title_alignment(Alignment::Center)
+            .title("Bebasin");
+
+    let selected_style = Style::default().add_modifier(Modifier::REVERSED);
+    let normal_style = Style::default().bg(Rgb(144, 238, 144));
+    let header_cells = ["Installation Menu"]
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Rgb(0, 0, 0))));
+    let header = Row::new(header_cells)
+        .style(normal_style)
+        .height(1)
+        .bottom_margin(1);
+    let rows = app.items.iter().map(|item| {
+        let height = item
+            .iter()
+            .map(|content| content.chars().filter(|c| *c == '\n').count())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let cells = item.iter().map(|c| Cell::from(*c));
+        Row::new(cells).height(height as u16).bottom_margin(1)
     });
-    cursive.add_layer(confirmation_layer);
-}
+    let t = Table::new(rows)
+        .header(header)
+        .block(wrapper)
+        .highlight_style(selected_style)
+        .highlight_symbol(">> ")
+        .widths(&[
+            Constraint::Percentage(50),
+            Constraint::Length(30),
+            Constraint::Min(10),
+        ]);
+    f.render_stateful_widget(t, chunks[0], &mut app.state);
 
-pub fn main(cursive: &mut Cursive) {
-    let text_header = TextView::new(format!("Bebasin version {}", CURRENT_VERSION));
-    let mut menu_buttons = LinearLayout::vertical();
-
-    if is_installed() {
-        menu_buttons = menu_buttons.child(Button::new("Uninstall", uninstall));
+    let status = if app.installed {
+        "Installed"
     } else {
-        menu_buttons = menu_buttons.child(Button::new("Install", install));
-        menu_buttons = menu_buttons.child(Button::new("Install Custom", install_custom_ui));
+        "Not Installed"
+    };
+
+    let text = vec![
+        Spans::from(format!("Status: {}", status))
+    ];
+
+    let create_block = |title| {
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
+    };
+
+    let paragraph = Paragraph::new(text.clone())
+        .block(create_block("Status"))
+        .alignment(Alignment::Left);
+    f.render_widget(paragraph, chunks[1]);
+
+    match &app.status {
+        Some(v) => {
+            match v {
+                Status::Error(e) => {
+                    error(f, e)
+                }
+                Status::InstallSuccess(m) => {
+                    confirmation(f, m)
+                }
+                Status::RemoveSuccess(m) => {
+                    confirmation(f, m)
+                }
+            }
+        }
+        None => {}
     }
 
-    menu_buttons = menu_buttons
-        .child(Button::new("Update", update))
-        .child(Button::new("Repository", |cursive| {
-            open_browser(cursive, REPOSITORY_URL);
-        }))
-        .child(Button::new("Report a problem", |cursive| {
-            let repository_create_issue_url = &format!("{}/issues/new", REPOSITORY_URL);
+    let input = Paragraph::new(app.input.as_ref())
+        .style(match app.input_mode {
+            InputMode::Normal => Style::default(),
+            InputMode::Editing => Style::default().fg(Color::Yellow),
+        })
+        .block(Block::default().borders(Borders::ALL).title("Custom Host Path"));
+    f.render_widget(input, chunks[2]);
+    match app.input_mode {
+        InputMode::Normal =>
+            {}
 
-            open_browser(cursive, repository_create_issue_url);
-        }))
-        .child(DummyView)
-        .child(Button::new("Quit", Cursive::quit));
-    let layout = Dialog::around(
-        LinearLayout::vertical()
-            .child(text_header)
-            .child(DummyView)
-            .child(menu_buttons),
-    )
-    .title("Menu");
-
-    cursive.add_layer(layout);
+        InputMode::Editing => {
+            f.set_cursor(
+                chunks[1].x + app.input.width() as u16 + 1,
+                chunks[1].y + 1,
+            )
+        }
+    }
 }

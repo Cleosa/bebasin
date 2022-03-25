@@ -1,9 +1,11 @@
-use crate::error::ErrorKind;
-use itertools::Itertools as _;
-use pest::Parser;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::prelude::*;
+
+use itertools::Itertools as _;
+use pest::Parser;
+
+use crate::error::ErrorKind;
 
 type Hosts = HashMap<String, HashSet<String>>;
 

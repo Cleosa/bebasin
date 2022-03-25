@@ -5,7 +5,7 @@ pub trait AppendableMap<K: std::cmp::Eq + std::hash::Hash, V> {
 }
 
 impl<K: std::cmp::Eq + std::hash::Hash, V: std::cmp::Eq + std::hash::Hash> AppendableMap<K, V>
-    for HashMap<K, HashSet<V>>
+for HashMap<K, HashSet<V>>
 {
     fn append(&mut self, other: HashMap<K, HashSet<V>>) -> Result<(), ()> {
         for (key, value) in other {
