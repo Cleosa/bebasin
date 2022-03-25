@@ -10,7 +10,8 @@ pub enum InputMode {
 
 pub enum Status {
     Error(ErrorKind),
-    Success(String),
+    InstallSuccess(String),
+    RemoveSuccess(String),
 }
 
 pub struct App<'a> {

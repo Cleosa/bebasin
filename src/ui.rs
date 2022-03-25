@@ -63,11 +63,11 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                         match &app.status {
                             Some(s) => {
                                 match s {
-                                    Status::Success(_) => {
+                                    Status::InstallSuccess(_) => {
                                         app.status = None;
                                         fs::remove_file(HOSTS_BACKUP_PATH);
                                     }
-                                    Status::Error(_) => {
+                                    _ => {
                                         app.status = None;
                                     }
                                 }
@@ -78,27 +78,39 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     KeyCode::Enter => {
 
                         if let Some(v) = &app.status {
-                            if let Status::Success(_) = v {
-                                let hosts_bebasin = if let Some(v) = &hosts_data.hosts_bebasin {
-                                    v
-                                }
-                                else {
-                                    unimplemented!()
-                                };
-                                match write_to_file(&hosts_data.hosts_path.unwrap(), hosts_bebasin, &hosts_data.hosts_header.unwrap()) {
-                                    Err(err) => {
-                                        app.status = Some(Status::Error(err));
+                            match v {
+                                Status::InstallSuccess(_) => {
+                                    let hosts_bebasin = if let Some(h) = &hosts_data.hosts_bebasin {
+                                        h
                                     }
-                                    Ok(_) => {
-                                        app.installed = true;
+                                    else {
+                                        unimplemented!()
+                                    };
+                                    match write_to_file(&hosts_data.hosts_path.unwrap(), hosts_bebasin, &hosts_data.hosts_header.unwrap()) {
+                                        Err(err) => {
+                                            app.status = Some(Status::Error(err));
+                                        }
+                                        Ok(_) => {
+                                            app.installed = true;
+                                        }
                                     }
+                                    app.status = None;
+                                    app.items = vec![
+                                        vec!["Uninstall"],
+                                        vec!["Update"],
+                                        vec!["Repository"],
+                                    ]
                                 }
-                                app.status = None;
-                                app.items = vec![
-                                    vec!["Uninstall"],
-                                    vec!["Update"],
-                                    vec!["Repository"],
-                                ]
+                                Status::RemoveSuccess(_) => {
+                                    app.status = None;
+                                    app.installed = false;
+                                    app.items = vec![
+                                        vec!["Install"],
+                                        vec!["Install Custom"],
+                                        vec!["Repository"],
+                                    ];
+                                }
+                                _ => {}
                             }
                         }
                         else {
@@ -119,7 +131,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                                                         match parse_from_file(HOSTS_BACKUP_PATH) {
                                                             Ok(hosts_backup) => {
                                                                 hosts_bebasin.append(hosts_backup);
-                                                                app.status = Some(Status::Success(String::from("Are you sure that you want to install bebasin?")));
+                                                                app.status = Some(Status::InstallSuccess(String::from("Are you sure that you want to install bebasin?")));
                                                                 hosts_data.hosts_path = Some(HOSTS_PATH);
                                                                 hosts_data.hosts_bebasin = Some(hosts_bebasin);
                                                                 hosts_data.hosts_header = Some(HOSTS_HEADER);
@@ -147,7 +159,41 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                                 }
                             }
                             else {
+                                match app.state.selected() {
+                                    Some(selection) => {
+                                        match selection {
+                                            0 => {
+                                                match fs::copy(HOSTS_BACKUP_PATH, HOSTS_PATH) {
+                                                    Ok(_) => {
+                                                        updater::remove_temp_file();
 
+                                                        match fs::remove_file(HOSTS_BACKUP_PATH) {
+                                                            Err(err) => {
+                                                                app.status = Some(Status::Error(ErrorKind::IOError(err)))
+                                                            }
+                                                            _ => {
+                                                                app.status = Some(Status::RemoveSuccess(String::from("Success!")));
+                                                            }
+                                                        };
+                                                    }
+                                                    Err(err) => {
+                                                        app.status = Some(Status::Error(ErrorKind::IOError(err)))
+                                                    },
+                                                };
+                                            }
+                                            1 => {
+
+                                            }
+                                            2 => {
+
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    None => {
+
+                                    }
+                                }
                             }
                         }
 
@@ -199,7 +245,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn confirmation<B: Backend>(f: &mut Frame<B>, msg: &String) {
-    let block = Block::default().title("Confirmation").borders(Borders::ALL)
+    let block = Block::default().title("Notification").borders(Borders::ALL)
         .style(Style::default().bg(Rgb(0,0,0)));
     let paragraph = Paragraph::new(msg.to_string())
         .block(block.clone())
@@ -307,7 +353,10 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
                 Status::Error(e) => {
                     error(f, e)
                 }
-                Status::Success(m) => {
+                Status::InstallSuccess(m) => {
+                    confirmation(f, m)
+                }
+                Status::RemoveSuccess(m) => {
                     confirmation(f, m)
                 }
             }
