@@ -27,6 +27,8 @@ use crate::parser::{parse_from_file, parse_from_str, write_to_file};
 use crate::updater::{backup, is_backed};
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use crate::app::Status::InstallSuccess;
 
 struct HostsData<'a> {
     hosts_path: Option<&'a str>,
@@ -69,6 +71,7 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                                     }
                                     _ => {
                                         app.status = None;
+                                        fs::remove_file(HOSTS_BACKUP_PATH);
                                     }
                                 }
                             }
@@ -110,22 +113,24 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                                         vec!["Repository"],
                                     ];
                                 }
-                                _ => {}
+                                Status::Error(_) => {
+                                    app.status = None;
+                                }
                             }
                         }
                         else {
-                            if !is_backed() {
-                                let backup_result = backup();
-                                if let Err(err) = backup_result {
-                                    app.status = Some(Status::Error(err))
-                                }
-                            }
 
                             if !app.installed {
                                 match app.state.selected() {
                                     Some(selection) => {
                                         match selection {
                                             0 => {
+                                                if !is_backed() {
+                                                    let backup_result = backup();
+                                                    if let Err(err) = backup_result {
+                                                        app.status = Some(Status::Error(err))
+                                                    }
+                                                }
                                                 match parse_from_str(HOSTS_BEBASIN) {
                                                     Ok(mut hosts_bebasin) => {
                                                         match parse_from_file(HOSTS_BACKUP_PATH) {
@@ -201,7 +206,59 @@ pub fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Resu
                     _ => {}
                 },
                 InputMode::Editing => match key.code {
-                    KeyCode::Enter => {}
+                    KeyCode::Enter => {
+                        let path: String = app.input.drain(..).collect();
+
+                        let mut contents = String::new();
+
+                        match fs::File::open(path) {
+                            Ok(mut file) => {
+                                match file.read_to_string(&mut contents) {
+                                    Ok(_) => {
+                                        let custom_hosts = contents.as_str();
+
+                                        if !is_backed() {
+                                            let backup_result = backup();
+                                            if let Err(err) = backup_result {
+                                                app.status = Some(Status::Error(err))
+                                            }
+                                        }
+
+                                        match parse_from_str(custom_hosts) {
+                                            Ok(mut custom_hosts) => {
+                                                match parse_from_file(HOSTS_BACKUP_PATH) {
+                                                    Ok(hosts_backup) => {
+                                                        custom_hosts.append(hosts_backup);
+                                                        app.input_mode = InputMode::Normal;
+                                                        app.status = Some(InstallSuccess(String::from("Are you sure that you want to install custom hosts?")));
+                                                        hosts_data.hosts_path = Some(HOSTS_PATH);
+                                                        hosts_data.hosts_bebasin = Some(custom_hosts);
+                                                        hosts_data.hosts_header = Some(HOSTS_HEADER);
+                                                    }
+                                                    Err(err) => {
+                                                        app.status = Some(Status::Error(err));
+                                                        app.input_mode = InputMode::Normal;
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                app.status = Some(Status::Error(err));
+                                                app.input_mode = InputMode::Normal;
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        app.status = Some(Status::Error(ErrorKind::IOError(err)));
+                                        app.input_mode = InputMode::Normal;
+                                    }
+                                };
+                            },
+                            Err(err) => {
+                                app.status = Some(Status::Error(ErrorKind::IOError(err)));
+                                app.input_mode = InputMode::Normal;
+                            },
+                        };
+                    }
                     KeyCode::Char(c) => {
                         app.input.push(c);
                     }
@@ -246,7 +303,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 fn confirmation<B: Backend>(f: &mut Frame<B>, msg: &String) {
     let block = Block::default().title("Notification").borders(Borders::ALL)
-        .style(Style::default().bg(Rgb(0,0,0)));
+        .style(Style::default().bg(Rgb(0,0,0)).fg(Rgb(144, 238, 144)));
     let paragraph = Paragraph::new(msg.to_string())
         .block(block.clone())
         .alignment(Alignment::Center);
@@ -258,7 +315,7 @@ fn confirmation<B: Backend>(f: &mut Frame<B>, msg: &String) {
 
 fn error<B: Backend>(f: &mut Frame<B>, error: &ErrorKind) {
     let block = Block::default().title(format!("An error occured!")).borders(Borders::ALL)
-        .style(Style::default().bg(Rgb(0,0,0)));
+        .style(Style::default().bg(Rgb(0,0,0)).fg(Rgb(255,0,0)));
     let text = vec![
         Spans::from(format!("Error: {}", error))
     ];
@@ -279,7 +336,7 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             [
                 Constraint::Min(1),
                 Constraint::Length(4),
-                Constraint::Length(4),
+                Constraint::Length(3),
             ]
                 .as_ref(),
         )
@@ -288,9 +345,9 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
     let wrapper =
         Block::default().borders(Borders::ALL)
-            .style(Style::default())
+            .style(Style::default().fg(Rgb(255,255,255)))
             .title_alignment(Alignment::Center)
-            .title("Bebasin");
+            .title(Spans::from(Span::styled("Bebasin", Style::default().add_modifier(Modifier::BOLD))));
 
     let selected_style = Style::default().add_modifier(Modifier::REVERSED);
     let normal_style = Style::default().bg(Rgb(144, 238, 144));
@@ -369,7 +426,7 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Style::default().fg(Color::Yellow),
         })
-        .block(Block::default().borders(Borders::ALL).title("Custom Host Path"));
+        .block(Block::default().borders(Borders::ALL).title(Span::styled("Custom Hosts Path", Style::default().add_modifier(Modifier::BOLD))));
     f.render_widget(input, chunks[2]);
     match app.input_mode {
         InputMode::Normal =>
@@ -377,8 +434,8 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 
         InputMode::Editing => {
             f.set_cursor(
-                chunks[1].x + app.input.width() as u16 + 1,
-                chunks[1].y + 1,
+                chunks[2].x + app.input.width() as u16 + 1,
+                chunks[2].y + 1,
             )
         }
     }
