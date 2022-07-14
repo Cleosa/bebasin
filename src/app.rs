@@ -34,7 +34,7 @@ impl<'a> App<'a> {
         } else {
             vec![
                 vec!["Uninstall"],
-                vec!["Update"],
+                vec!["Update (In Development)"],
                 vec!["Repository"],
             ]
         };
